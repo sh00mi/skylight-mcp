@@ -5,6 +5,9 @@
 
 const BASE_URL = "https://app.ourskylight.com";
 
+// Skylight rejects requests that lack a supported API version header
+export const API_VERSION = process.env.SKYLIGHT_API_VERSION || "2026-10-15";
+
 export interface LoginResponse {
   data: {
     id: string;
@@ -39,6 +42,7 @@ export async function login(email: string, password: string): Promise<AuthResult
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",
+      "Skylight-Api-Version": API_VERSION,
     },
     body: JSON.stringify({ email, password }),
   });

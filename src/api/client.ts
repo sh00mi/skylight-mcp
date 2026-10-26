@@ -1,7 +1,16 @@
-import { getConfig, usesEmailAuth, type Config } from "../config.js";
-import { login } from "./auth.js";
+import { getConfig, usesEmailAuth, usesRefreshAuth, type Config } from "../config.js";
+import { API_VERSION, login } from "./auth.js";
+import {
+  isExpired,
+  loadTokens,
+  OAuthError,
+  refreshAccessToken,
+  saveTokens,
+  type OAuthTokens,
+} from "./oauth.js";
 import {
   AuthenticationError,
+  ConfigurationError,
   NotFoundError,
   RateLimitError,
   SkylightError,
@@ -30,6 +39,9 @@ export class SkylightClient {
   private resolvedUserId: string | null = null;
   private loginPromise: Promise<{ token: string; userId: string }> | null = null;
   private subscriptionStatus: SubscriptionStatus = null;
+  private oauthTokens: OAuthTokens | null = null;
+  private refreshPromise: Promise<string> | null = null;
+  private discoveredFrameId: string | null = null;
 
   constructor(config?: Config) {
     this.config = config ?? getConfig();
@@ -37,9 +49,21 @@ export class SkylightClient {
 
   /**
    * Get the authentication credentials
-   * If using email/password auth, will login first
+   * If using refresh token or email/password auth, will obtain a token first
    */
   private async getCredentials(): Promise<{ token: string; userId: string | null }> {
+    // OAuth access tokens expire, so check them before reusing
+    if (usesRefreshAuth(this.config)) {
+      if (this.oauthTokens && !isExpired(this.oauthTokens)) {
+        return { token: this.oauthTokens.accessToken, userId: null };
+      }
+      // Share one refresh between concurrent requests
+      this.refreshPromise ??= this.performRefresh().finally(() => {
+        this.refreshPromise = null;
+      });
+      return { token: await this.refreshPromise, userId: null };
+    }
+
     // If we already have a resolved token, use it
     if (this.resolvedToken) {
       return { token: this.resolvedToken, userId: this.resolvedUserId };
@@ -85,6 +109,83 @@ export class SkylightClient {
   }
 
   /**
+   * Get a fresh OAuth access token
+   *
+   * The token file may be shared with other server processes, and Skylight rotates
+   * refresh tokens, so the file is re-read on every attempt: another process may
+   * already have refreshed, or rotated the refresh token we were about to use.
+   * SKYLIGHT_REFRESH_TOKEN is the last resort.
+   */
+  private async performRefresh(): Promise<string> {
+    const rejectedAccessToken = this.oauthTokens?.accessToken;
+    const tried = new Set<string>();
+    let lastError: unknown = new Error("No refresh token available");
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const saved = loadTokens(this.config.tokenFile);
+      if (saved && saved.accessToken !== rejectedAccessToken && !isExpired(saved)) {
+        this.oauthTokens = saved;
+        return saved.accessToken;
+      }
+
+      const refreshToken = [saved?.refreshToken, this.config.refreshToken].find(
+        (token): token is string => !!token && !tried.has(token)
+      );
+      if (!refreshToken) {
+        break;
+      }
+      tried.add(refreshToken);
+
+      try {
+        const tokens = await refreshAccessToken(refreshToken);
+        saveTokens(this.config.tokenFile, tokens);
+        this.oauthTokens = tokens;
+        return tokens.accessToken;
+      } catch (error) {
+        lastError = error;
+        // Only a rejected refresh token is worth retrying with another one
+        if (!(error instanceof OAuthError && error.invalidGrant)) {
+          break;
+        }
+      }
+    }
+
+    const reason = lastError instanceof Error ? lastError.message : String(lastError);
+    throw new AuthenticationError(`${reason}. Run \`npx @eaglebyte/skylight-mcp login\` to sign in again.`);
+  }
+
+  /**
+   * Read the account's subscription status from /api/user
+   */
+  private async fetchSubscriptionStatus(): Promise<SubscriptionStatus> {
+    const response = await this.get<{ data: { attributes: { subscription_status?: string | null } } }>(
+      "/api/user"
+    );
+    const status = response.data.attributes.subscription_status;
+    return status === "plus" || status === "trial" ? status : "free";
+  }
+
+  /**
+   * Find the account's frame when SKYLIGHT_FRAME_ID is not set
+   */
+  private async discoverFrameId(): Promise<string> {
+    const response = await this.get<{ data: Array<{ id: string; attributes: { name?: string } }> }>(
+      "/api/frames"
+    );
+    const frames = response.data;
+
+    if (frames.length === 1) {
+      console.error(`Using frame ${frames[0].id} (${frames[0].attributes.name ?? "unnamed"})`);
+      return frames[0].id;
+    }
+    if (frames.length === 0) {
+      throw new ConfigurationError("This Skylight account has no frames.");
+    }
+    const list = frames.map((frame) => `${frame.id} (${frame.attributes.name ?? "unnamed"})`).join(", ");
+    throw new ConfigurationError(`This account has several frames; set SKYLIGHT_FRAME_ID to one of: ${list}`);
+  }
+
+  /**
    * Build the Authorization header
    * For email/password auth: Basic base64(userId:token)
    * For manual token auth: Bearer or Basic based on config
@@ -98,8 +199,8 @@ export class SkylightClient {
       return `Basic ${credentials}`;
     }
 
-    // For manual token config, respect the authType setting
-    if (this.config.authType === "basic") {
+    // For manual token config, respect the authType setting (OAuth tokens are always Bearer)
+    if (this.config.authType === "basic" && !usesRefreshAuth(this.config)) {
       return `Basic ${token}`;
     }
     return `Bearer ${token}`;
@@ -173,7 +274,7 @@ export class SkylightClient {
     const { method = "GET", params, body } = options;
 
     // Replace {frameId} placeholder with actual frame ID
-    const resolvedEndpoint = endpoint.replace("{frameId}", this.config.frameId);
+    const resolvedEndpoint = endpoint.includes("{frameId}") ? endpoint.replace("{frameId}", this.frameId) : endpoint;
     const url = this.buildUrl(resolvedEndpoint, params);
 
     console.error(`[client] ${method} ${url}`);
@@ -181,6 +282,7 @@ export class SkylightClient {
     const headers: Record<string, string> = {
       Authorization: await this.getAuthHeader(),
       Accept: "application/json",
+      "Skylight-Api-Version": API_VERSION,
     };
 
     if (body) {
@@ -196,11 +298,15 @@ export class SkylightClient {
     console.error(`[client] Response: ${response.status}`);
 
     if (!response.ok) {
-      // For email/password auth, try re-login once on 401
-      if (response.status === 401 && usesEmailAuth(this.config) && !isRetry) {
+      // For email/password or refresh token auth, try re-login once on 401
+      const canReauth = usesEmailAuth(this.config) || usesRefreshAuth(this.config);
+      if (response.status === 401 && canReauth && !isRetry) {
         console.error("[client] Got 401, attempting re-login...");
         this.resolvedToken = null;
         this.resolvedUserId = null;
+        if (this.oauthTokens) {
+          this.oauthTokens.expiresAt = 0;
+        }
         return this.request<T>(endpoint, options, true);
       }
       await this.handleResponseError(response, url);
@@ -229,10 +335,14 @@ export class SkylightClient {
   }
 
   /**
-   * Get the frame ID from config
+   * Get the frame ID from config, or the one discovered during initialize()
    */
   get frameId(): string {
-    return this.config.frameId;
+    const frameId = this.config.frameId ?? this.discoveredFrameId;
+    if (!frameId) {
+      throw new ConfigurationError("SKYLIGHT_FRAME_ID is not set and no frame has been discovered");
+    }
+    return frameId;
   }
 
   /**
@@ -257,10 +367,19 @@ export class SkylightClient {
   }
 
   /**
-   * Initialize the client (triggers login if using email/password auth)
+   * Initialize the client (triggers login if using email/password or refresh token auth)
+   * With refresh token auth, also resolves the subscription status and frame
    */
   async initialize(): Promise<void> {
     await this.getCredentials();
+
+    if (usesRefreshAuth(this.config)) {
+      this.subscriptionStatus = this.config.subscription ?? (await this.fetchSubscriptionStatus());
+      if (!this.config.frameId) {
+        this.discoveredFrameId = await this.discoverFrameId();
+      }
+      console.error(`Authenticated via OAuth (${this.subscriptionStatus})`);
+    }
   }
 }
 

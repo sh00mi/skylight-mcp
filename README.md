@@ -15,7 +15,17 @@ An MCP (Model Context Protocol) server for the Skylight Calendar API. Enables AI
 
 ### Installation
 
-#### Option 1: npm package (Recommended)
+#### 1. Sign in once
+
+Skylight signs in with OAuth, so the server needs a saved token rather than your password:
+
+```bash
+npx @eaglebyte/skylight-mcp login
+```
+
+This opens Skylight's sign-in page in your browser. After you sign in, the browser lands on an `ourskylight.com/welcome` address; copy that full address from the address bar and paste it into the terminal. Tokens are saved to `~/.skylight-mcp/tokens.json` and refreshed automatically from then on.
+
+#### 2. Add the server
 
 **mcp.json:**
 ```json
@@ -23,12 +33,7 @@ An MCP (Model Context Protocol) server for the Skylight Calendar API. Enables AI
   "mcpServers": {
     "skylight": {
       "command": "npx",
-      "args": ["@eaglebyte/skylight-mcp"],
-      "env": {
-        "SKYLIGHT_EMAIL": "your_email@example.com",
-        "SKYLIGHT_PASSWORD": "your_password",
-        "SKYLIGHT_FRAME_ID": "your_frame_id"
-      }
+      "args": ["@eaglebyte/skylight-mcp"]
     }
   }
 }
@@ -36,17 +41,19 @@ An MCP (Model Context Protocol) server for the Skylight Calendar API. Enables AI
 
 **Claude Code:**
 ```bash
-claude mcp add skylight npx @eaglebyte/skylight-mcp \
-  -e SKYLIGHT_EMAIL=your_email@example.com \
-  -e SKYLIGHT_PASSWORD=your_password \
-  -e SKYLIGHT_FRAME_ID=your_frame_id
+claude mcp add skylight -- npx @eaglebyte/skylight-mcp
 ```
 
-#### Option 2: From source
+On Windows, use `cmd /c npx @eaglebyte/skylight-mcp` as the command.
+
+Your frame (household) and Plus subscription are detected from your account. If the account has several frames, `login` lists them; add `SKYLIGHT_FRAME_ID` to pick one.
+
+#### From source
 
 ```bash
 git clone https://github.com/TheEagleByte/skylight-mcp.git
 cd skylight-mcp && npm install && npm run build
+node dist/index.js login
 ```
 
 Then use in mcp.json:
@@ -55,12 +62,7 @@ Then use in mcp.json:
   "mcpServers": {
     "skylight": {
       "command": "node",
-      "args": ["/path/to/skylight-mcp/dist/index.js"],
-      "env": {
-        "SKYLIGHT_EMAIL": "your_email@example.com",
-        "SKYLIGHT_PASSWORD": "your_password",
-        "SKYLIGHT_FRAME_ID": "your_frame_id"
-      }
+      "args": ["/path/to/skylight-mcp/dist/index.js"]
     }
   }
 }
@@ -81,16 +83,21 @@ Copy this into your AI's custom instructions or system prompt:
 ## Prerequisites
 
 - Node.js 18+
-- A Skylight account with an active subscription
-- Your Skylight Frame ID (see [Finding your Frame ID](#finding-your-frame-id))
+- A Skylight account
 
 ## Authentication
 
-The MCP server supports two authentication methods:
+### Option 1: OAuth (Recommended)
 
-### Option 1: Email/Password (Recommended)
+Skylight's apps sign in with OAuth 2.0 (authorization code + PKCE). Run `npx @eaglebyte/skylight-mcp login` once; the server then exchanges the saved refresh token for access tokens as needed. Skylight rotates refresh tokens on every use, so the server writes each new one back to the token file. Several server processes can share the same file.
 
-Use your Skylight account credentials. The server will automatically log in and manage tokens.
+If the refresh token expires or is revoked, the server fails with a message asking you to run `login` again.
+
+You can also provide a refresh token directly with `SKYLIGHT_REFRESH_TOKEN` (for example in a container). It is tried after the token file's, and rotated tokens are still written to the token file.
+
+### Option 2: Email/Password (Legacy)
+
+The old `POST /api/sessions` login. Skylight now rejects it with *"This version of Skylight is no longer supported"*, so it only remains for compatibility.
 
 ```env
 SKYLIGHT_EMAIL=your_email@example.com
@@ -98,7 +105,7 @@ SKYLIGHT_PASSWORD=your_password
 SKYLIGHT_FRAME_ID=your_frame_id
 ```
 
-### Option 2: Manual Token (Legacy)
+### Option 3: Manual Token (Legacy)
 
 Capture a token from the Skylight app using a proxy tool.
 
@@ -110,33 +117,22 @@ SKYLIGHT_AUTH_TYPE=bearer
 
 ### Finding your Frame ID
 
-You still need to find your frame ID (the household identifier):
-
-1. Use a proxy tool ([Proxyman](https://proxyman.io/), [Charles](https://www.charlesproxy.com/), or [mitmproxy](https://mitmproxy.org/))
-2. Capture any API request from the Skylight app
-3. Look at the URL path: `/api/frames/{frameId}/...`
-4. Example: `/api/frames/abc123/chores` → frame ID is `abc123`
+With OAuth, the frame is discovered automatically, and `login` prints every frame on the account. For the legacy options, look for the ID in API URLs like `/api/frames/{frameId}/chores`, for example in your browser's developer tools on the Skylight web app.
 
 ## Configuration
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `SKYLIGHT_EMAIL` | Option 1 | Your Skylight account email |
-| `SKYLIGHT_PASSWORD` | Option 1 | Your Skylight account password |
-| `SKYLIGHT_TOKEN` | Option 2 | Your API token (if not using email/password) |
-| `SKYLIGHT_AUTH_TYPE` | No | `bearer` (default) or `basic` (for manual token) |
-| `SKYLIGHT_FRAME_ID` | Yes | Your household frame ID |
+| `SKYLIGHT_TOKEN_FILE` | No | Where OAuth tokens are saved (default: `~/.skylight-mcp/tokens.json`) |
+| `SKYLIGHT_REFRESH_TOKEN` | No | OAuth refresh token, if not using `login` |
+| `SKYLIGHT_FRAME_ID` | Options 2–3 | Your household frame ID (OAuth: only needed if the account has several frames) |
+| `SKYLIGHT_SUBSCRIPTION` | No | `plus`, `free` or `trial`; overrides the status read from your account (OAuth) |
+| `SKYLIGHT_API_VERSION` | No | `Skylight-Api-Version` header sent with requests (default: `2026-10-15`) |
 | `SKYLIGHT_TIMEZONE` | No | Default timezone (default: `America/New_York`) |
-
-### Example .env file:
-
-```env
-# Email/password auth (recommended)
-SKYLIGHT_EMAIL=your_email@example.com
-SKYLIGHT_PASSWORD=your_password
-SKYLIGHT_FRAME_ID=your_frame_id
-SKYLIGHT_TIMEZONE=America/New_York
-```
+| `SKYLIGHT_EMAIL` | Option 2 | Your Skylight account email |
+| `SKYLIGHT_PASSWORD` | Option 2 | Your Skylight account password |
+| `SKYLIGHT_TOKEN` | Option 3 | Your API token |
+| `SKYLIGHT_AUTH_TYPE` | No | `bearer` (default) or `basic` (for manual token) |
 
 ## Available Tools
 

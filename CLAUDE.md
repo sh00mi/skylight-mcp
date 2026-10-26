@@ -39,18 +39,19 @@ npm run generate:types # Generate TypeScript types from OpenAPI spec
 
 ## Authentication
 
-Two methods supported (validated via Zod refinement in `config.ts`):
+Three methods supported (validated via Zod refinement in `config.ts`):
 
-1. **Email/Password** (recommended): Set `SKYLIGHT_EMAIL` and `SKYLIGHT_PASSWORD`. Server auto-logs in via POST /api/sessions and uses `Basic base64(userId:token)` format for subsequent requests.
-2. **Manual Token**: Set `SKYLIGHT_TOKEN` and optionally `SKYLIGHT_AUTH_TYPE` (bearer/basic).
+1. **OAuth** (recommended): `skylight-mcp login` (`src/login.ts`) runs the authorization code + PKCE flow (`client_id=skylight-mobile`, redirect `https://ourskylight.com/welcome`; the user pastes the redirect URL back) and saves tokens to `SKYLIGHT_TOKEN_FILE` (default `~/.skylight-mcp/tokens.json`). The client (`api/oauth.ts`, `api/client.ts`) refreshes via `POST /oauth/token` with `grant_type=refresh_token` and sends `Bearer <access_token>`. `SKYLIGHT_REFRESH_TOKEN` is an alternative seed. Takes precedence when a refresh token or token file exists. Subscription status comes from `GET /api/user`; the frame from `GET /api/frames` when `SKYLIGHT_FRAME_ID` is unset.
+2. **Email/Password** (legacy): POST /api/sessions, then `Basic base64(userId:token)`. Skylight now rejects this login with "This version of Skylight is no longer supported".
+3. **Manual Token**: Set `SKYLIGHT_TOKEN` and optionally `SKYLIGHT_AUTH_TYPE` (bearer/basic).
 
-Both require `SKYLIGHT_FRAME_ID` (household identifier from API URLs like `/api/frames/{frameId}/chores`).
+Options 2 and 3 require `SKYLIGHT_FRAME_ID` (household identifier from API URLs like `/api/frames/{frameId}/chores`).
 
-**Note**: The Skylight API uses Basic auth with the format `Basic base64(userId:token)`, not Bearer tokens.
+All requests send `Skylight-Api-Version` (`SKYLIGHT_API_VERSION`, default `2026-10-15`).
 
 ## Plus Subscription
 
-Some features require a Skylight Plus subscription. The server detects subscription status from the login response (`subscription_status: "plus"`). Plus-only tools are not registered for non-Plus users.
+Some features require a Skylight Plus subscription. The server detects subscription status from `GET /api/user` (OAuth) or the login response (email/password), `subscription_status: "plus"`; `SKYLIGHT_SUBSCRIPTION` overrides it. Plus-only tools are not registered for non-Plus users.
 
 **Plus-only domains**: Rewards, Meals, Photos
 
@@ -103,4 +104,6 @@ The release workflow (`.github/workflows/release.yml`) will:
 ## API Quirks
 
 - **Calendar date_max is exclusive**: When querying calendar events, `date_max` is treated as exclusive. The code adds 1 day to include events on the end date.
-- **Auth format**: API expects `Basic base64(userId:token)`, not Bearer tokens.
+- **Auth format**: Session tokens from the legacy `/api/sessions` login use `Basic base64(userId:token)`; OAuth access tokens use `Bearer`.
+- **Refresh token rotation**: `/oauth/token` returns a new refresh token on every refresh and the old one stops working, so it must be saved each time. The token file is re-read before each refresh because several processes may share it.
+- **API version header**: Requests without a supported `Skylight-Api-Version` are rejected with "This version of Skylight is no longer supported".
