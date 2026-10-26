@@ -23,7 +23,13 @@ Skylight signs in with OAuth, so the server needs a saved token rather than your
 npx @eaglebyte/skylight-mcp login
 ```
 
-This opens Skylight's sign-in page in your browser. After you sign in, the browser lands on an `ourskylight.com/welcome` address; copy that full address from the address bar and paste it into the terminal. Tokens are saved to `~/.skylight-mcp/tokens.json` and refreshed automatically from then on.
+It prints a sign-in address and walks you through it:
+
+1. Open a new browser tab and its developer tools (F12), go to the **Network** tab, tick **Preserve log** and filter for `welcome`.
+2. Open the printed address in that tab and sign in to Skylight.
+3. Copy the URL of the `welcome?code=...` request from the Network tab and paste it into the terminal.
+
+The developer tools step is needed because Skylight only redirects to its own `ourskylight.com/welcome` page, which immediately removes the code from the address bar and history (it rejects loopback and out-of-band redirect URIs). Tokens are saved to `~/.skylight-mcp/tokens.json` and refreshed automatically from then on, so you only do this once.
 
 #### 2. Add the server
 

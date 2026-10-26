@@ -47,6 +47,10 @@ describe("oauth", () => {
       expect(parseAuthorizationRedirect("https://ourskylight.com/welcome?code=abc&state=s1", "s1")).toBe("abc");
     });
 
+    it("accepts the bare code", () => {
+      expect(parseAuthorizationRedirect("  abc123_DEF-456  ", "s1")).toBe("abc123_DEF-456");
+    });
+
     it("accepts a bare query string", () => {
       expect(parseAuthorizationRedirect("  code=abc&state=s1  ", "s1")).toBe("abc");
     });

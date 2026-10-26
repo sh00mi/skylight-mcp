@@ -160,10 +160,14 @@ export function buildAuthorizeUrl(codeChallenge: string, state: string): string 
 
 /**
  * Get the authorization code from the redirect URL the user pastes back
- * Accepts the full URL or just the query string; verifies the state
+ * Accepts the full URL, just the query string, or the bare code; verifies the state when present
  */
 export function parseAuthorizationRedirect(input: string, expectedState: string): string {
   const trimmed = input.trim();
+  if (/^[A-Za-z0-9_-]+$/.test(trimmed)) {
+    return trimmed;
+  }
+
   const query = trimmed.includes("?") ? trimmed.slice(trimmed.indexOf("?") + 1) : trimmed;
   const params = new URLSearchParams(query.split("#")[0]);
 

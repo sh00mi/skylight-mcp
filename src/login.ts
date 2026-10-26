@@ -5,7 +5,6 @@
 
 /* eslint-disable no-console -- interactive CLI; output goes to the user's terminal, not MCP stdio */
 
-import { spawn } from "node:child_process";
 import { createInterface } from "node:readline/promises";
 
 import { API_VERSION } from "./api/auth.js";
@@ -18,28 +17,6 @@ import {
   saveTokens,
 } from "./api/oauth.js";
 import { getTokenFile } from "./config.js";
-
-/**
- * Best-effort attempt to open a URL in the default browser
- */
-function openBrowser(url: string): void {
-  const [command, args] =
-    process.platform === "win32"
-      ? ["rundll32", ["url.dll,FileProtocolHandler", url]]
-      : process.platform === "darwin"
-        ? ["open", [url]]
-        : ["xdg-open", [url]];
-
-  try {
-    const child = spawn(command, args, { stdio: "ignore", detached: true });
-    child.on("error", () => {
-      // The URL is printed anyway
-    });
-    child.unref();
-  } catch {
-    // The URL is printed anyway
-  }
-}
 
 /**
  * List the account's frames so the user knows which SKYLIGHT_FRAME_ID to use
@@ -64,16 +41,24 @@ export async function runLogin(): Promise<void> {
   const state = createState();
   const authorizeUrl = buildAuthorizeUrl(challenge, state);
 
-  console.log("Sign in to Skylight in your browser:\n");
-  console.log(`  ${authorizeUrl}\n`);
-  console.log("After signing in, the browser lands on an ourskylight.com/welcome address.");
-  console.log("Copy that full address from the address bar and paste it below.\n");
-  openBrowser(authorizeUrl);
+  // Skylight only redirects to its own /welcome page, which removes the code from the
+  // address bar and browser history at once, so the redirect is read from DevTools.
+  console.log(`Sign in to Skylight:
+
+  1. Open a new browser tab and open developer tools (F12, or Cmd+Option+I on a Mac).
+  2. In the Network tab, tick "Preserve log" and type "welcome" in the filter box.
+  3. In that same tab, open this address and sign in:
+
+     ${authorizeUrl}
+
+  4. Click the "welcome?code=..." request in the Network tab and copy its Request URL
+     (or right-click it > Copy > Copy URL).
+`);
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   let redirect: string;
   try {
-    redirect = await rl.question("Address: ");
+    redirect = await rl.question("Paste the welcome URL (or just the code): ");
   } finally {
     rl.close();
   }
